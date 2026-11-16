@@ -53,7 +53,7 @@ android {
     ndkVersion = "28.2.13676358"
 
     defaultConfig {
-        applicationId = "com.zvika.music"
+        applicationId = "com.truecaller"
         minSdk = Versions.minSdk
         targetSdk = Versions.targetSdk
         versionCode = appVersionCode()
