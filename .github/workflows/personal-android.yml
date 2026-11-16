@@ -1,9 +1,16 @@
 name: personal-android
 
 # Personal Android build: package com.zvika.music, signed with a private key from repo secrets.
-# Run by hand (Actions -> personal-android -> Run workflow). Publishes the APKs as a GitHub release.
+# Runs on every push to master, or by hand (Actions -> personal-android -> Run workflow). Publishes the APKs as a GitHub release.
 on:
   workflow_dispatch:
+  push:
+    branches: [master]
+
+# A newer push to master replaces a build that is still running.
+concurrency:
+  group: personal-android
+  cancel-in-progress: true
 
 permissions:
   contents: write
