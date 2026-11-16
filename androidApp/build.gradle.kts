@@ -53,7 +53,7 @@ android {
     ndkVersion = "28.2.13676358"
 
     defaultConfig {
-        applicationId = "io.ymusic.android"
+        applicationId = "com.zvika.music"
         minSdk = Versions.minSdk
         targetSdk = Versions.targetSdk
         versionCode = appVersionCode()

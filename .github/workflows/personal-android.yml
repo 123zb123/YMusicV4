@@ -1,0 +1,129 @@
+name: personal-android
+
+# Personal Android build: package com.zvika.music, signed with a private key from repo secrets.
+# Run by hand (Actions -> personal-android -> Run workflow). Publishes the APKs as a GitHub release.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  FFMPEG_BUILD_REPO: ymusic-io/ffmpeg-build
+  FFMPEG_BUILD_REF: 4d2dc9ae0c73dc5f01733f18af070412013a6a93
+  NDK_VERSION: 28.2.13676358
+
+jobs:
+  ffmpeg-android:
+    name: ffmpeg ${{ matrix.slug }}
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        slug: [android-armeabi-v7a, android-arm64-v8a, android-x86, android-x86_64]
+    steps:
+      - id: cache
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: ffmpeg-build/out/${{ matrix.slug }}
+          key: ffmpeg-${{ matrix.slug }}-${{ env.FFMPEG_BUILD_REF }}-ndk${{ env.NDK_VERSION }}
+      - if: steps.cache.outputs.cache-hit != 'true'
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          repository: ${{ env.FFMPEG_BUILD_REPO }}
+          ref: ${{ env.FFMPEG_BUILD_REF }}
+          path: ffmpeg-build
+          submodules: recursive
+          fetch-depth: 1
+      - if: steps.cache.outputs.cache-hit != 'true'
+        name: Install NDK
+        run: |
+          yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --install "ndk;$NDK_VERSION" > /dev/null
+          echo "ANDROID_NDK_ROOT=$ANDROID_HOME/ndk/$NDK_VERSION" >> "$GITHUB_ENV"
+      - if: steps.cache.outputs.cache-hit != 'true'
+        working-directory: ffmpeg-build
+        run: |
+          sudo apt-get update && sudo apt-get install -y nasm automake autoconf libtool pkg-config patchelf
+          scripts/build-android.sh "${SLUG#android-}" || {
+            for log in .deps-$SLUG/.build/*/config.log; do
+              [ -f "$log" ] && { echo "::group::$log"; tail -n 80 "$log"; echo "::endgroup::"; }
+            done
+            exit 1
+          }
+        env:
+          SLUG: ${{ matrix.slug }}
+
+  android:
+    needs: ffmpeg-android
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          path: YMusicV4
+      - uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: ffmpeg-build/out/android-armeabi-v7a
+          key: ffmpeg-android-armeabi-v7a-${{ env.FFMPEG_BUILD_REF }}-ndk${{ env.NDK_VERSION }}
+          fail-on-cache-miss: true
+      - uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: ffmpeg-build/out/android-arm64-v8a
+          key: ffmpeg-android-arm64-v8a-${{ env.FFMPEG_BUILD_REF }}-ndk${{ env.NDK_VERSION }}
+          fail-on-cache-miss: true
+      - uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: ffmpeg-build/out/android-x86
+          key: ffmpeg-android-x86-${{ env.FFMPEG_BUILD_REF }}-ndk${{ env.NDK_VERSION }}
+          fail-on-cache-miss: true
+      - uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: ffmpeg-build/out/android-x86_64
+          key: ffmpeg-android-x86_64-${{ env.FFMPEG_BUILD_REF }}-ndk${{ env.NDK_VERSION }}
+          fail-on-cache-miss: true
+      - uses: actions/setup-java@cf277c60eb25467037889841efdb72551f06f6c3 # v4
+        with:
+          distribution: temurin
+          java-version: 21
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22
+      - uses: gradle/actions/setup-gradle@0b6dd653ba04f4f93bf581ec31e66cbd7dcb644d # v4
+      - name: Install NDK
+        run: |
+          yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --install "ndk;$NDK_VERSION" > /dev/null
+          echo "ANDROID_NDK_ROOT=$ANDROID_HOME/ndk/$NDK_VERSION" >> "$GITHUB_ENV"
+      - name: Restore signing key
+        working-directory: YMusicV4
+        env:
+          KEYSTORE_B64: ${{ secrets.ANDROID_KEYSTORE_B64 }}
+        run: |
+          mkdir -p signing
+          echo "$KEYSTORE_B64" | base64 -d > signing/release.p12
+      - name: Assemble release APKs
+        working-directory: YMusicV4
+        env:
+          YMUSIC_ANDROID_STORE_FILE: signing/release.p12
+          YMUSIC_ANDROID_STORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          YMUSIC_ANDROID_KEY_ALIAS: music
+        run: ./gradlew -Pproduction=true :androidApp:assembleRelease
+      - name: Discard signing key
+        if: always()
+        working-directory: YMusicV4
+        run: rm -rf signing
+      - name: Check package name and signature
+        working-directory: YMusicV4
+        run: |
+          apk=$(ls androidApp/build/outputs/apk/release/*arm64-v8a*.apk | head -1)
+          aapt=$(ls $ANDROID_HOME/build-tools/*/aapt2 | tail -1)
+          "$aapt" dump badging "$apk" | head -1
+          "$(dirname $aapt)/apksigner" verify --print-certs "$apk" | head -3
+      - name: Publish release
+        working-directory: YMusicV4
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag="personal-${{ github.run_number }}"
+          gh release create "$tag" androidApp/build/outputs/apk/release/*.apk \
+            -R "${{ github.repository }}" --target "${{ github.sha }}" \
+            --title "Personal build ${{ github.run_number }} (com.zvika.music)" \
+            --notes "Personal Android build, package com.zvika.music. Most phones: the arm64-v8a APK."
